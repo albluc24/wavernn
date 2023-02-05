@@ -1,7 +1,8 @@
 """Dataset preprocessing"""
 import argparse
-import os
+import os, torch
 from concurrent.futures import ProcessPoolExecutor
+from sklearn.decomposition import PCA
 from functools import partial
 from multiprocessing import cpu_count
 
@@ -10,32 +11,27 @@ import numpy as np
 from tqdm import tqdm
 
 from config import Config as cfg
+import s3prl.hub as hub
 
-
+model=hub.tera().to(0)
+pca = PCA(n_components=32)
 def _compute_melspectrogram(wav):
     """Compute the mel-spectrogram
     """
     # Apply pre-emphasis
-    wav = librosa.effects.preemphasis(wav, coef=0.97)
+    #wav = librosa.effects.preemphasis(wav, coef=0.97)
 
     # Compute the mel spectrogram
-    mel = librosa.feature.melspectrogram(y=wav,
-                                         sr=cfg.sampling_rate,
-                                         hop_length=cfg.hop_length,
-                                         win_length=cfg.win_length,
-                                         n_fft=cfg.n_fft,
-                                         n_mels=cfg.num_mels,
-                                         fmin=cfg.fmin,
-                                         norm=1,
-                                         power=1)
-
+    #mel = librosa.feature.melspectrogram(y=wav, sr=cfg.sampling_rate, hop_length=cfg.hop_length, win_length=cfg.win_length, n_fft=cfg.n_fft, n_mels=cfg.num_mels, fmin=cfg.fmin, norm=1, power=1)
+    with torch.no_grad():
+        mel=model([torch.tensor(wav).to(0)])["last_hidden_state"][0]
+    mel=pca.fit_transform(mel.cpu().numpy())
+    
     # Convert to log scale
-    mel = librosa.core.amplitude_to_db(mel, top_db=None) - cfg.ref_db
-
+    #mel = librosa.core.amplitude_to_db(mel, top_db=None) - cfg.ref_db
     # Normalize
-    mel = np.maximum(mel, -cfg.max_db)
-    mel = mel / cfg.max_db
-
+    #mel = np.maximum(mel, -cfg.max_db)
+    #mel = mel / cfg.max_db
     return mel
 
 
@@ -61,6 +57,7 @@ def process_wav(mel_dir, qwav_dir, wav_path):
 
     # Load wav file from disk
     wav, _ = librosa.load(wav_path, sr=cfg.sampling_rate)
+    if len(wav)>=30*cfg.sampling_rate: return
 
     peak = np.abs(wav).max()
     if peak >= 1:
@@ -107,16 +104,14 @@ def build_from_path_ljspeech(in_dir, out_dir, num_workers=1, tqdm=lambda x: x):
 
     executor = ProcessPoolExecutor(max_workers=num_workers)
     futures = []
-
-    with open(os.path.join(in_dir, "metadata.csv"), "r") as file_reader:
-        for line in file_reader:
-            parts = line.strip().split("|")
-            wav_path = os.path.join(in_dir, "wavs", f"{parts[0]}.wav")
-            futures.append(
-                executor.submit(
-                    partial(process_wav, mel_dir, qwav_dir, wav_path)))
-
-    return [future.result() for future in tqdm(futures)]
+    for line in tqdm(os.listdir('../wavs')):
+        wav_path=f"../wavs/{line}"
+        #futures.append(
+            #executor.submit(
+                #partial(process_wav, mel_dir, qwav_dir, wav_path)))
+        futures.append(process_wav(mel_dir, qwav_dir, wav_path))
+    #return [future.result() for future in tqdm(futures)]
+    return futures
 
 
 def preprocess(in_dir, out_dir, num_workers):
@@ -147,7 +142,8 @@ if __name__ == "__main__":
                         required=True)
 
     args = parser.parse_args()
-    num_workers = cpu_count()
+    #num_workers = cpu_count()
+    num_workers=1
 
     dataset_dir = args.dataset_dir
     out_dir = args.out_dir
